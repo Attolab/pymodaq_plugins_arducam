@@ -1,10 +1,9 @@
 ## To modify by developer(s) of the plugin
 
 [plugin-info]
-SHORT_PLUGIN_NAME = 'template'  #to be modified, for instance daqmx then rename the module name:
-# (pymodaq_plugins_template become pymodaq_plugins_daqmx for instance)
+SHORT_PLUGIN_NAME = 'arducam'
 
-package-url = 'https://github.com/PyMoDAQ/pymodaq_plugins_template' #to modify
+package-url = 'https://github.com/Attolab/pymodaq_plugins_arducam'
 description = 'some word about your plugin'
 
 author = 'Author Name'
