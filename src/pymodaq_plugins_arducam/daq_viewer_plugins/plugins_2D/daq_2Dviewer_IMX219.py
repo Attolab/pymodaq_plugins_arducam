@@ -33,15 +33,15 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
     params = comon_parameters + [
         # {'title': 'Camera:', 'name': 'camera_list', 'type': 'list', 'limits': []},
         # {'title': 'Camera model:', 'name': 'camera_info', 'type': 'str', 'value': '', 'readonly': True},
-        #{'title': 'Update center', 'name': 'update_roi', 'type': 'bool_push', 'value': False},
-        #{'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
+        {'title': 'Update center', 'name': 'update_center', 'type': 'bool_push', 'value': False},
+        {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'Gain', 'name': 'gain', 'type': 'int', 'value': 1, 'readonly': False},
         {'title': 'Image options', 'name': 'image_opts', 'type': 'group', 'children':
             [{'title': 'Binning', 'name': 'binning', 'type': 'list', 'limits': ['1x1', '2x2', '4x4']},
              {'title': 'Cropping mode', 'name': 'crop_mode', 'type': 'list',
               'limits': ['(3280, 2464)', '(1920, 1080)', '(256, 256)', '(128, 128)']},
-             {'title': 'Horizontal Crop', 'name': 'x0', 'type': 'int', 'value': 0},
-             {'title': 'Vertical Crop', 'name': 'y0', 'type': 'int', 'value': 0}]
+             {'title': 'Horizontal Center', 'name': 'xc', 'type': 'int', 'value': 0},
+             {'title': 'Vertical Center', 'name': 'yc', 'type': 'int', 'value': 0}]
          },
         {'title': 'Timing', 'name': 'timing_opts', 'type': 'group', 'children':
             [{'title': 'Exposure Time (s)', 'name': 'exposure_time', 'type': 'float', 'value': 1.0},
@@ -80,26 +80,26 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         elif param.name() == "exposure_time":
             self.controller.set_sensor_parameters(exposure_time=param.value())
 
-        elif param.name() in ["crop_mode", "x0", "y0"]:
-            crop_dict = self.cropping_dict()
-            if (crop_dict['wsize']+crop_dict['xmin'] > 3280) or (crop_dict['hsize']+crop_dict['ymin'] > 2464):
-                print("Cropping is larger than sensor size")
-            else:
+        elif param.name() in ["crop_mode", "xc", "yc"]:
+            self.controller.set_sensor_parameters(window=self.cropping_dict())
+            self.update_image_size()
+
+        elif param.name() == "update_center":
+            if param.value():
+                x0 = self.roi_pos_size.x()
+                y0 = self.roi_pos_size.y()
+                width = self.roi_pos_size.width()
+                height = self.roi_pos_size.height()
+
+                xc = int(x0 + width / 2)
+                yc = int(y0 + height / 2)
+                self.settings.child("image_opts", "xc").setValue(xc)
+                self.settings.child("image_opts", "yc").setValue(yc)
+
                 self.controller.set_sensor_parameters(window=self.cropping_dict())
                 self.update_image_size()
+                self.settings.child("update_center").setValue(False)
 
-        # {'wsize': w, 'hsize': h, 'xmin': x0, 'ymin': y0}
-        # elif param.name() == "update_roi":
-        #     x0 = self.roi_pos_size.x()
-        #     y0 = self.roi_pos_size.y()
-        #     width = self.roi_pos_size.width()
-        #     height = self.roi_pos_size.height()
-        #
-        #     xc = int(x0 + width / 2)
-        #     yc = int(y0 + height / 2)
-        #     self.settings.child("image_opts", "xc").setValue(xc)
-        #     self.settings.child("image_opts", "yc").setValue(yc)
-        #     self.controller.set_sensor_parameters(window=self.cropping_dict())
 
     def ini_detector(self, controller=None):
         """Detector communication initialization
@@ -213,9 +213,12 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
             w = 128
             h = 128
 
-        x0 = self.settings["image_opts", "x0"]
-        y0 = self.settings["image_opts", "x0"]
-        return {'wsize': w, 'hsize':h, 'xmin': x0, 'ymin': y0}
+        xc = self.settings["image_opts", "xc"]
+        yc = self.settings["image_opts", "xc"]
+        xmin = np.min(3280 - xc - w / 2, 3280-w)
+        ymin = np.min(2464 - yc - h / 2, 2464-h)
+
+        return {'wsize': w, 'hsize':h, 'xmin': xmin, 'ymin': ymin}
 
     def binning_value(self):
         param = self.settings["image_opts", "binning"]
