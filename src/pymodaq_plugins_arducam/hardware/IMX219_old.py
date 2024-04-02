@@ -1,4 +1,4 @@
-from bergipy import dec2reg
+from pymodaq_plugins_arducam.hardware.IMX219Tools import dec2reg
 from subprocess import Popen, PIPE
 from datetime import datetime
 import numpy as np
@@ -18,7 +18,7 @@ class ImageSensorIMX219():
 
         if process.returncode != 0:
             print('ERROR - unable to connect to RPi - Is the SSH alias set?')
-            raise(ValueError('ERROR'))
+            exit()
 
         self.default_registers = {
             # Gain:
@@ -27,7 +27,7 @@ class ImageSensorIMX219():
 
             # Exposure time:
             '015A': '0100',  # COARSE_INTEGRATION_TIME_A     max. working FFFC      Exposure
-            '0160': '8000',  # FRM_LENGTH_A                  max. working FFFF      Frameperiod
+            '0160': 'FFFF',  # FRM_LENGTH_A                  max. working FFFF      Frameperiod
             '0162': '0D78',  # LINE_LENGTH_A                 max. working FFFF      Exposure, Frameperiod
 
             # Clocking
@@ -42,6 +42,7 @@ class ImageSensorIMX219():
 
             # Binning
             '0174': '00',    # BINNING_MODE_H_A              0 = None, 1 = 2x2, 2 = 4x4
+            '0175': '00',    # BINNING_MODE_V_A
 
             # Cropping
             '0164': dec2reg(0),       # X_min
@@ -50,6 +51,7 @@ class ImageSensorIMX219():
             '0168': dec2reg(0),       # Y_min
             '016A': dec2reg(2463),    # Y_max     default 2463
         }
+        self.registers = self.default_registers
 
         self.supported_cropping_modes = [(3280, 2464), (1920, 1080), (256, 256), (128, 128)]
 
@@ -97,7 +99,10 @@ class ImageSensorIMX219():
             for key, value in overwrite_registers.items():
                 registers[key] = value
 
-        registers['0175'] = registers['0174']
+        if registers['0174'] != registers['0175']:
+            print('ERROR - Vertical and Horizontal binning are different. This is not supported.')
+            exit()
+
         binning_mode = int(registers['0174'])
 
         if binning_mode == 0:
@@ -108,18 +113,18 @@ class ImageSensorIMX219():
             frame_resolution = 616, 820
         else:
             print('ERROR - Unsupported binning mode.')
-            raise(ValueError('ERROR'))
+            exit()
 
         frame_size_x = int(registers['0166'], base=16) - int(registers['0164'], base=16) + 1
         frame_size_y = int(registers['016A'], base=16) - int(registers['0168'], base=16) + 1
 
         if (frame_size_x, frame_size_y) != (3280, 2464) and binning_mode != 0:
             print('ERROR - Simultaneous binning and cropping is not supported.')
-            raise(ValueError('ERROR'))
+            exit()
 
-        # if (frame_size_x, frame_size_y) not in self.supported_cropping_modes:
-        #     print(f'ERROR - Cropping to size {(frame_size_x, frame_size_y)} is not supported.')
-        #     raise(ValueError('ERROR'))
+        if (frame_size_x, frame_size_y) not in self.supported_cropping_modes:
+            print(f'ERROR - Cropping to size {(frame_size_x, frame_size_y)} is not supported.')
+            exit()
 
         registers['016C'] = dec2reg(frame_size_x)
         registers['016E'] = dec2reg(frame_size_y)
@@ -129,6 +134,8 @@ class ImageSensorIMX219():
 
             if (frame_size_x, frame_size_y) != (3280, 2464):
                 binning_mode = frame_size_x
+
+        self.registers = registers #save registers
 
         if 'darwin' or 'linux' in sys.platform:
             registers_str = '\;'.join([f'{k},{v}' for k, v in registers.items()])
@@ -147,9 +154,9 @@ class ImageSensorIMX219():
             print(f'Expected frame rate is {1 / frame_period:.2f}fps\n')
 
         number_of_frames = int(camera_on_time / frame_period)
-        # if number_of_frames > 60:
-        #     print('ERROR - Too many frames for RAM')
-        #     raise(ValueError('ERROR'))
+        if number_of_frames > 60:
+            print('ERROR - Too many frames for RAM')
+            exit()
 
         timestamp = datetime.now().strftime('%d.%m._%H-%M-%S')
 
@@ -237,13 +244,11 @@ class ImageSensorIMX219():
         image_stack = np.zeros((len(frames_filenames), frame_resolution[0], frame_resolution[1]), dtype=np.uint16)
         bytes_per_frame = int(len(dd_stdout) / len(frames_filenames))
 
-        print(bytes_per_frame - (1000*1000 * 10/8))
-
         for frame_idx, _ in enumerate(frames_filenames):
-            image_array = self.unpack(dd_stdout[:bytes_per_frame], binning_mode=binning_mode)
+            image_array = self.unpack(dd_stdout[:bytes_per_frame])
             dd_stdout = dd_stdout[bytes_per_frame:]
 
-            image_stack[frame_idx,:,:] = image_array[:frame_resolution[0], :frame_resolution[1]]
+            image_stack[frame_idx,:,:] = image_array
 
         if verbose:
             print(f'Transferred and unpacked {len(frames_filenames)} Frames in {time.perf_counter() - start}s')
@@ -251,53 +256,12 @@ class ImageSensorIMX219():
         del image_array, stdout, stderr
         return image_stack
 
-    def unpack(self, buffer, binning_mode=0):
-
-        if binning_mode == 0:
-            rows = 2464
-            columns = 3280
-            chunks = 820
-            throwaway_bits = 28
-
-        elif binning_mode == 1:
-            rows = 1232
-            columns = 3280
-            chunks = 820
-            throwaway_bits = 28
-
-        elif binning_mode == 2:
-            rows = 616
-            columns = 3280
-            chunks = 820
-            throwaway_bits = 28
-
-        elif binning_mode == 1920:
-            rows = 1088
-            columns = 1920
-            chunks = 480
-            throwaway_bits = 0
-
-        elif binning_mode == 256:
-            rows = 256
-            columns = 256
-            chunks = 64
-            throwaway_bits = 0
-
-        elif binning_mode == 128:
-            rows = 128
-            columns = 128
-            chunks = 32
-            throwaway_bits = 0
-
-        else:
-            print(f'Unsupported binning mode: "{binning_mode}" Exiting...')
-            raise(ValueError('ERROR'))
-
+    def unpack(self, buffer):
         data_array = np.frombuffer(buffer, dtype=np.uint8)
-        data_array = data_array.reshape((rows, chunks * 5 + throwaway_bits))
+        data_array = data_array.reshape((2464, 4128))
 
-        if throwaway_bits: data_array = data_array[:, :-throwaway_bits]
-        data_array = data_array.reshape((rows, chunks, 5))
+        data_array = data_array[:, :-28]
+        data_array = data_array.reshape((2464, 820, 5))
 
         data_array = data_array.astype(np.uint16)
         data_array[:, :, :-1] = data_array[:, :, :-1] << 2
@@ -308,7 +272,7 @@ class ImageSensorIMX219():
         data_array[:, :, 0] |= (data_array[:, :, 4] >> 6)
 
         data_array = data_array[:, :, :4]
-        data_array = data_array.reshape((rows, columns))
+        data_array = data_array.reshape((2464, 3280))
 
         return data_array
 
@@ -418,16 +382,13 @@ class ImageSensorIMX219():
 
         exposure_time = (coarse_integration_time * line_length / 2 + fine_integration_time / 2) * 1 / pixel_clock_freq
         clockout_time = 1 / output_clock_freq * 7 * 10 ** 7
-        camera_on_time = 0.5 + exposure_time
-
-        if line_length > 0x1000:
-            camera_on_time += clockout_time
+        camera_on_time = 0.5 + exposure_time + clockout_time
 
         gain = 256 / (256 - int(self.default_registers['0157'], base=16))
 
         return exposure_time, camera_on_time, frame_period, gain
 
-    def set_sensor_parameters(self, gain=None, exposure_time=None, window=None, binning=0):
+    def set_sensor_parameters(self, gain=None, exposure_time=None, binning=None):
         """Set Sensor Parameters Easy Mode
 
         Configure the sensor registers for a desired gain and exposure time.
@@ -438,93 +399,43 @@ class ImageSensorIMX219():
         ----------
         gain : float
             Setting the analoge gain of the sensor, corresponding to a linear increase
-            in sensitivity. The range of values is 1 to 86.
+            in sensitivity. The maximum stable value is 85.
 
         exposure_time: float
-            Desired Exposure time in seconds. Range of values is 30e-6 to 30 s.
-
-        window: dict
-            Dictionary containing the following keys: wsize, xmin, ymin
-            This sets the size for windowing. Only the following values for wsize are supported:
-
-            1920 meaning a window of 1920x1080
-            256 ... 256x256
-            128 ... 128x128
-
-            The offset (i.e. xmin and ymin) can be arbitrary
-
-            Example: window = {'wsize': 256, 'xmin': 500, 'ymin': 600}
-
-            !! Simultaneous Cropping and Binning is not supported !!
-
-        binning: int
-            Reducing resolution by averaging 2x2 or 4x4 pixel clusters on the sensor directly.
-            Binning mode can be 0, 1 or 2. Corresponding to no binning, 2x2 binning and 4x4 binning.
-
-            !! Simultaneous Cropping and Binning is not supported !!
+            Desired Exposure time in seconds.
 
         Returns
         -------
         Nothing
         """
 
-        if window is not None:
-            window_size = window['wsize']
-
-            if window_size not in [128, 256, 1920]:
-                print(f'ERROR: Window size {window_size} not supported. Supported sizes are 128, 256, 1920.')
-                raise(ValueError('ERROR'))
-
-            self.default_registers['0164'] = dec2reg(window['xmin'])
-            self.default_registers['0168'] = dec2reg(window['ymin'])
-
-            if window_size == 128:
-                self.default_registers['0166'] = dec2reg(window['xmin'] + 127)
-                self.default_registers['016A'] = dec2reg(window['ymin'] + 127)
-
-            elif window_size == 256:
-                self.default_registers['0166'] = dec2reg(window['xmin'] + 255)
-                self.default_registers['016A'] = dec2reg(window['ymin'] + 255)
-
-            elif window_size == 1920:
-                self.default_registers['0166'] = dec2reg(window['xmin'] + 1919)
-                self.default_registers['016A'] = dec2reg(window['ymin'] + 1079)
-
-        self.default_registers['0174'] = f"{int(binning):#0{4}x}"[2:]
-
         if gain is not None:
             gain_register_value = 256 - (256 / gain)
             self.default_registers['0157'] = f"{int(gain_register_value):#0{4}x}"[2:]
 
         if exposure_time is not None:
-            for i in range(2):
-                line_length = int(self.default_registers['0162'], base=16)
-                fine_integration_time = 500
+            line_length = int(self.default_registers['0162'], base=16)
+            fine_integration_time = 500
 
-                pre_div_1 = int(self.default_registers['0304'], base=16)
-                mult_pll_1 = int(self.default_registers['0306'], base=16)
-                pix_div_1 = int(self.default_registers['0301'], base=16)
+            pre_div_1 = int(self.default_registers['0304'], base=16)
+            mult_pll_1 = int(self.default_registers['0306'], base=16)
+            pix_div_1 = int(self.default_registers['0301'], base=16)
 
-                sensor_input_clock_freq = 24 * 10 ** 6
-                pixel_clock_freq = sensor_input_clock_freq * 1 / pre_div_1 * mult_pll_1 * 1 / pix_div_1
+            sensor_input_clock_freq = 24 * 10 ** 6
+            pixel_clock_freq = sensor_input_clock_freq * 1 / pre_div_1 * mult_pll_1 * 1 / pix_div_1
 
-                coarse_integration_time = (exposure_time * pixel_clock_freq - fine_integration_time / 2) / (line_length / 2)
+            coarse_integration_time = (exposure_time * pixel_clock_freq - fine_integration_time / 2) / (line_length / 2)
 
-                if coarse_integration_time > 0xFFFC:
-                    if line_length != 0xFFFF:
-                        self.default_registers['0162'] = 'FFFF'
-                        continue
+            if coarse_integration_time > 0xFFFC:
+                print('Desired exposure time is too large. Try to reduce clock speed or increase line length. Exiting...')
+                exit()
 
-                    print('Desired exposure time is too large. Try to reduce clock speed or increase line length. Exiting...')
-                    raise(ValueError('ERROR'))
+            if coarse_integration_time < 1:
+                print('Desired exposure time is too small. Try to increase clock speed or reduce line length. Exiting...')
+                exit()
 
-                if coarse_integration_time < 1:
-                    print('Desired exposure time is too small. Try to increase clock speed or reduce line length. Exiting...')
-                    raise(ValueError('ERROR'))
+            self.default_registers['015A'] = f"{int(coarse_integration_time):#0{4}x}"[2:]
 
-                self.default_registers['015A'] = f"{int(coarse_integration_time):#0{6}x}"[2:]
-                break
-
-    def update_default_registers(self, registers):
-        for key, value in registers.items():
-            self.default_registers[key] = value
+        if binning is not None:
+            self.default_registers['0174'] = f"{int(binning):#0{4}x}"[2:]
+            self.default_registers['0175'] = f"{int(binning):#0{4}x}"[2:]
