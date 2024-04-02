@@ -10,7 +10,7 @@ from qtpy import QtWidgets, QtCore
 
 class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
     """ Instrument plugin class for a 2D viewer.
-    
+
     This object inherits all functionalities to communicate with PyMoDAQ’s DAQ_Viewer module through inheritance via
     DAQ_Viewer_base. It makes a bridge between the DAQ_Viewer module and the Python wrapper of a particular instrument.
 
@@ -26,34 +26,40 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
     controller: object
         The particular object that allow the communication with the hardware, in general a python wrapper around the
          hardware library.
-         
+
     # TOD add your particular attributes here if any
 
     """
     params = comon_parameters + [
-        #{'title': 'Camera:', 'name': 'camera_list', 'type': 'list', 'limits': []},
-        #{'title': 'Camera model:', 'name': 'camera_info', 'type': 'str', 'value': '', 'readonly': True},
-        {'title': 'Update center', 'name': 'update_roi', 'type': 'bool_push', 'value': False},
-        {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
-        {'title': 'Binning', 'name': 'binning', 'type': 'list', 'limits': ['1x1', '2x2', '4x4']},
-        {'title': 'Image width', 'name': 'hdet', 'type': 'int', 'value': 1, 'readonly': True},
-        {'title': 'Image height', 'name': 'vdet', 'type': 'int', 'value': 1, 'readonly': True},
-        {'title': 'Cropping mode', 'name': 'crop_mode', 'type': 'list', 'limits': ['(3280, 2464)', '(1920, 1080)', '(256, 256)', '(128, 128)']},
+        # {'title': 'Camera:', 'name': 'camera_list', 'type': 'list', 'limits': []},
+        # {'title': 'Camera model:', 'name': 'camera_info', 'type': 'str', 'value': '', 'readonly': True},
+        #{'title': 'Update center', 'name': 'update_roi', 'type': 'bool_push', 'value': False},
+        #{'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
         {'title': 'Gain', 'name': 'gain', 'type': 'int', 'value': 1, 'readonly': False},
+        {'title': 'Image options', 'name': 'image_opts', 'type': 'group', 'children':
+            [{'title': 'Binning', 'name': 'binning', 'type': 'list', 'limits': ['1x1', '2x2', '4x4']},
+             {'title': 'Cropping mode', 'name': 'crop_mode', 'type': 'list',
+              'limits': ['(3280, 2464)', '(1920, 1080)', '(256, 256)', '(128, 128)']},
+             {'title': 'Horizontal Crop', 'name': 'x0', 'type': 'int', 'value': 0},
+             {'title': 'Vertical Crop', 'name': 'y0', 'type': 'int', 'value': 0}]
+         },
         {'title': 'Timing', 'name': 'timing_opts', 'type': 'group', 'children':
             [{'title': 'Exposure Time (s)', 'name': 'exposure_time', 'type': 'float', 'value': 1.0},
              {'title': 'Camera On Time (s)', 'name': 'camera_on_time', 'type': 'float', 'value': 1.0, 'readonly': True},
              {'title': 'Frame Period', 'name': 'frame_period', 'type': 'float', 'value': 0.0, 'readonly': True}]
          }
     ]
-    start_acquire_signal = QtCore.Signal(int)   #Signal with number of required frames
+    start_acquire_signal = QtCore.Signal(int)  # Signal with number of required frames
     stop_acquire_signal = QtCore.Signal()
-    roi_pos_size = QtCore.QRectF(0,0,10,10)
+    roi_pos_size = QtCore.QRectF(0, 0, 10, 10)
 
     def ini_attributes(self):
         self.controller: ImageSensorIMX219 = None
         self.x_axis = None
         self.y_axis = None
+
+    def ROISelect(self, roi_pos_size):
+        self.roi_pos_size = roi_pos_size
 
     def commit_settings(self, param: Parameter):
         """Apply the consequences of a change of value in the detector settings
@@ -65,18 +71,35 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         """
 
         if param.name() == "binning":
-            if param.value() == '1x1':
-                self.controller.set_sensor_parameters(binning=0)
-            elif param.value() == '2x2':
-                self.controller.set_sensor_parameters(binning=1)
-            elif param.value() == '4x4':
-                self.controller.set_sensor_parameters(binning=2)
+            self.controller.set_sensor_parameters(binning=self.binning_value())
+            self.update_image_size()
 
         elif param.name() == "gain":
             self.controller.set_sensor_parameters(gain=param.value())
 
         elif param.name() == "exposure_time":
             self.controller.set_sensor_parameters(exposure_time=param.value())
+
+        elif param.name() in ["crop_mode", "x0", "y0"]:
+            crop_dict = self.cropping_dict()
+            if (crop_dict['wsize']+crop_dict['xmin'] > 3280) or (crop_dict['hsize']+crop_dict['ymin'] > 2464):
+                print("Cropping is larger than sensor size")
+            else:
+                self.controller.set_sensor_parameters(window=self.cropping_dict())
+                self.update_image_size()
+
+        # {'wsize': w, 'hsize': h, 'xmin': x0, 'ymin': y0}
+        # elif param.name() == "update_roi":
+        #     x0 = self.roi_pos_size.x()
+        #     y0 = self.roi_pos_size.y()
+        #     width = self.roi_pos_size.width()
+        #     height = self.roi_pos_size.height()
+        #
+        #     xc = int(x0 + width / 2)
+        #     yc = int(y0 + height / 2)
+        #     self.settings.child("image_opts", "xc").setValue(xc)
+        #     self.settings.child("image_opts", "yc").setValue(yc)
+        #     self.controller.set_sensor_parameters(window=self.cropping_dict())
 
     def ini_detector(self, controller=None):
         """Detector communication initialization
@@ -95,8 +118,11 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         """
         self.ini_detector_init(old_controller=controller,
                                new_controller=ImageSensorIMX219())
+
         self.controller.set_sensor_parameters(gain=self.settings['gain'],
-                                              exposure_time=self.settings['timing_opts', 'exposure_time'])
+                                              exposure_time=self.settings['timing_opts', 'exposure_time'],
+                                              window=self.cropping_dict(),
+                                              binning=self.binning_value())
         exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
         self.settings.child("gain").setValue(gain)
         self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
@@ -152,18 +178,18 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         # else:
         #     self.start_acquire_signal.emit(Naverage)  # will trigger the waitfor acquisition
         data = self.controller.acquire(return_frame=True, verbose=False)
-        self.emit_data(np.mean(data,axis=0))
+        self.emit_data(np.mean(data, axis=0))
 
     def update_image_size(self):
         registers = self.controller.default_registers
-        frame_size_x = int(registers['0166'], base=16) - int(registers['0164'], base=16) + 1
-        frame_size_y = int(registers['016A'], base=16) - int(registers['0168'], base=16) + 1
+        frame_size_x = int(registers['0166'], base=16) - int(registers['0164'].replace("x","0"), base=16) + 1
+        frame_size_y = int(registers['016A'], base=16) - int(registers['0168'].replace("x","0"), base=16) + 1
         #
         self.x_axis = Axis(data=np.linspace(0, frame_size_x, frame_size_x, endpoint=False), label='Pixels', index=1)
         self.y_axis = Axis(data=np.linspace(0, frame_size_y, frame_size_y, endpoint=False), label='Pixels', index=0)
 
-        self.settings.child("hdet").setValue(frame_size_x)
-        self.settings.child("vdet").setValue(frame_size_y)
+        # self.settings.child("hdet").setValue(frame_size_x)
+        # self.settings.child("vdet").setValue(frame_size_y)
         #
         # self.dte_signal.emit(DataToExport('IMX219',
         #                                   data=[DataFromPlugins(name='IMX219', data=[data],
@@ -172,16 +198,47 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         #                                                         y_axis=self.y_axis), ]))
         #
 
+    def cropping_dict(self):
+        param = self.settings['image_opts', 'crop_mode']
+        if param == '(3280, 2464)':
+            w = 3280
+            h = 2464
+        elif param == '(1920, 1080)':
+            w = 1920
+            h = 1080
+        elif param == '(256, 256)':
+            w = 256
+            h = 256
+        elif param == '(128, 128)':
+            w = 128
+            h = 128
+
+        x0 = self.settings["image_opts", "x0"]
+        y0 = self.settings["image_opts", "x0"]
+        return {'wsize': w, 'hsize':h, 'xmin': x0, 'ymin': y0}
+
+    def binning_value(self):
+        param = self.settings["image_opts", "binning"]
+        if param == '1x1':
+            binning_value = 0
+        elif param == '2x2':
+            binning_value = 1
+        elif param == '4x4':
+            binning_value = 2
+
+        return binning_value
+
     def emit_data(self, data):
         self.dte_signal.emit(DataToExport('IMX219',
                                           data=[DataFromPlugins(name='IMX219', data=[data],
-                                                                 dim='Data2D', labels=['Camera image'],
-                                                                 x_axis=self.x_axis,
-                                                                 y_axis=self.y_axis), ]))
+                                                                dim='Data2D', labels=['Camera image'],
+                                                                x_axis=self.x_axis,
+                                                                y_axis=self.y_axis), ]))
 
     def stop(self):
         self.stop_acquire_signal.emit()
         return ''
+
 
 class IMX219Callback(QtCore.QObject):
     """
@@ -216,6 +273,7 @@ class IMX219Callback(QtCore.QObject):
                 # print(f'ind_grab_thread:{ind_grab}')
                 self.data_sig.emit([pData])
                 QtCore.QThread.msleep(wait_time)
+
 
 if __name__ == '__main__':
     main(__file__)
