@@ -1,4 +1,4 @@
-from pymodaq.utils.daq_utils import ThreadCommand
+from pymodaq.utils.daq_utils import ThreadCommand, set_logger, get_module_name
 from pymodaq.utils.data import DataFromPlugins, Axis, DataToExport
 from pymodaq.control_modules.viewer_utility_classes import DAQ_Viewer_base, comon_parameters, main
 from pymodaq.utils.parameter import Parameter
@@ -7,6 +7,7 @@ from bergipy import dec2reg, array2png
 import numpy as np
 from qtpy import QtWidgets, QtCore
 
+logger = set_logger(get_module_name(__file__))
 
 class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
     """ Instrument plugin class for a 2D viewer.
@@ -35,7 +36,7 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         # {'title': 'Camera model:', 'name': 'camera_info', 'type': 'str', 'value': '', 'readonly': True},
         {'title': 'Update center', 'name': 'update_center', 'type': 'bool_push', 'value': False},
         {'title': 'Clear ROI+Bin', 'name': 'clear_roi', 'type': 'bool_push', 'value': False},
-        {'title': 'Gain', 'name': 'gain', 'type': 'int', 'value': 1, 'readonly': False},
+        {'title': 'Gain', 'name': 'gain', 'type': 'int', 'value': 1, 'readonly': False, 'min':1, 'max':86},
         {'title': 'Image options', 'name': 'image_opts', 'type': 'group', 'children':
             [{'title': 'Binning', 'name': 'binning', 'type': 'list', 'limits': ['1x1', '2x2', '4x4']},
              {'title': 'Cropping mode', 'name': 'crop_mode', 'type': 'list',
@@ -76,12 +77,24 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
 
         elif param.name() == "gain":
             self.controller.set_sensor_parameters(gain=param.value())
+            exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
+            self.settings.child("gain").setValue(gain)
+            self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
+            self.settings.child("timing_opts", "camera_on_time").setValue(camera_on_time)
+            self.settings.child("timing_opts", "frame_period").setValue(frame_period)
 
         elif param.name() == "exposure_time":
             self.controller.set_sensor_parameters(exposure_time=param.value())
+            exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
+            self.settings.child("gain").setValue(gain)
+            self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
+            self.settings.child("timing_opts", "camera_on_time").setValue(camera_on_time)
+            self.settings.child("timing_opts", "frame_period").setValue(frame_period)
 
         elif param.name() in ["crop_mode", "xc", "yc"]:
-            self.controller.set_sensor_parameters(window=self.cropping_dict())
+            crop_dict = self.cropping_dict()
+            logger.info('Cropping parameters are now ' + str(crop_dict))
+            self.controller.set_sensor_parameters(window=crop_dict)
             self.update_image_size()
 
         elif param.name() == "update_center":
@@ -100,6 +113,18 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
                 self.update_image_size()
                 self.settings.child("update_center").setValue(False)
 
+        elif param.name() == "clear_roi":
+            if param.value():
+                self.controller.set_sensor_parameters(window={'wsize': 3280, 'xmin': 0, 'ymin': 0})
+                self.controller.set_sensor_parameters(binning = 0)
+
+                self.settings.child("image_opts", "crop_mode").setValue('(3280, 2464)')
+                self.settings.child("image_opts", "xc").setValue(0)
+                self.settings.child("image_opts", "yc").setValue(0)
+                self.settings.child("image_opts", "binning").setValue('1x1')
+                self.update_image_size()
+                logger.info('Cropping parameters back to default: (3280,2464), binning 1x1')
+                self.settings.child("clear_roi").setValue(False)
 
     def ini_detector(self, controller=None):
         """Detector communication initialization
@@ -214,10 +239,9 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
             h = 128
 
         xc = self.settings["image_opts", "xc"]
-        yc = self.settings["image_opts", "xc"]
-        xmin = np.min(3280 - xc - w / 2, 3280-w)
-        ymin = np.min(2464 - yc - h / 2, 2464-h)
-
+        yc = self.settings["image_opts", "yc"]
+        xmin = int(np.min((np.abs(3280 - xc - w / 2), np.abs(3280-w))))
+        ymin = int(np.min((np.abs(2464 - yc - h / 2), np.abs(2464-h))))
         return {'wsize': w, 'hsize':h, 'xmin': xmin, 'ymin': ymin}
 
     def binning_value(self):
