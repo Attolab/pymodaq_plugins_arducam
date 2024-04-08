@@ -48,7 +48,10 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
             [{'title': 'Exposure Time (s)', 'name': 'exposure_time', 'type': 'float', 'value': 1.0},
              {'title': 'Camera On Time (s)', 'name': 'camera_on_time', 'type': 'float', 'value': 1.0, 'readonly': True},
              {'title': 'Frame Period', 'name': 'frame_period', 'type': 'float', 'value': 0.0, 'readonly': True}]
-         }
+         },
+        {'title': 'Nframes', 'name': 'nframes', 'type': 'int', 'value': 1, 'readonly': False, 'min': 1},
+        {'title': 'Multiframe display', 'name': 'multiframe_display', 'type': 'list', 'limits': ['Average', '3D', 'Multi 2D'], 'visible': False},
+        {'title': 'Frames received', 'name': 'nframes_received', 'type': 'int', 'value': 0, 'readonly': True, 'visible': False},
     ]
     start_acquire_signal = QtCore.Signal(int)  # Signal with number of required frames
     stop_acquire_signal = QtCore.Signal()
@@ -73,6 +76,11 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
 
         if param.name() == "binning":
             self.controller.set_sensor_parameters(binning=self.binning_value())
+            exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
+            self.settings.child("gain").setValue(gain)
+            self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
+            self.settings.child("timing_opts", "camera_on_time").setValue(camera_on_time)
+            self.settings.child("timing_opts", "frame_period").setValue(frame_period)
             self.update_image_size()
 
         elif param.name() == "gain":
@@ -96,6 +104,11 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
             logger.info('Cropping parameters are now ' + str(crop_dict))
             self.controller.set_sensor_parameters(window=crop_dict)
             self.update_image_size()
+            exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
+            self.settings.child("gain").setValue(gain)
+            self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
+            self.settings.child("timing_opts", "camera_on_time").setValue(camera_on_time)
+            self.settings.child("timing_opts", "frame_period").setValue(frame_period)
 
         elif param.name() == "update_center":
             if param.value():
@@ -124,7 +137,17 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
                 self.settings.child("image_opts", "binning").setValue('1x1')
                 self.update_image_size()
                 logger.info('Cropping parameters back to default: (3280,2464), binning 1x1')
+
+                exposure_time, camera_on_time, frame_period, gain = self.controller.calculate_exposure()
+                self.settings.child("gain").setValue(gain)
+                self.settings.child("timing_opts", "exposure_time").setValue(exposure_time)
+                self.settings.child("timing_opts", "camera_on_time").setValue(camera_on_time)
+                self.settings.child("timing_opts", "frame_period").setValue(frame_period)
                 self.settings.child("clear_roi").setValue(False)
+
+        if param.name() == "nframes":
+            self.settings.child('multiframe_display').setOpts(visible=(param.value()>1))
+            self.settings.child('nframes_received').setOpts(visible=(param.value() > 1))
 
     def ini_detector(self, controller=None):
         """Detector communication initialization
@@ -202,8 +225,14 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         #     self.start_acquire_signal.emit(-1)  # will trigger the waitfor acquisition
         # else:
         #     self.start_acquire_signal.emit(Naverage)  # will trigger the waitfor acquisition
-        data = self.controller.acquire(return_frame=True, verbose=False)
-        self.emit_data(np.mean(data, axis=0))
+        if self.settings["nframes"]>1:
+            _, _, frame_period, _ = self.controller.calculate_exposure()
+            overwrite_on_time = self.settings["nframes"]*frame_period
+        else:
+            overwrite_on_time = None
+
+        data = self.controller.acquire(overwrite_on_time=overwrite_on_time, return_frame=True, verbose=False, )
+        self.emit_data(data)
 
     def update_image_size(self):
         registers = self.controller.default_registers
@@ -256,11 +285,28 @@ class DAQ_2DViewer_IMX219(DAQ_Viewer_base):
         return binning_value
 
     def emit_data(self, data):
-        self.dte_signal.emit(DataToExport('IMX219',
-                                          data=[DataFromPlugins(name='IMX219', data=[data],
-                                                                dim='Data2D', labels=['Camera image'],
-                                                                x_axis=self.x_axis,
-                                                                y_axis=self.y_axis), ]))
+        nframes = data.shape[0]
+        self.settings.child("nframes_received").setValue(nframes)
+
+        dat = [DataFromPlugins(name='IMX219', data=np.mean(data, axis=0),
+                              dim='Data2D', labels=['Camera image'],
+                              x_axis=self.x_axis,
+                              y_axis=self.y_axis)]
+
+        if self.settings["nframes"] > 1:
+            if self.settings["multiframe_display"] == '3D':
+                dat = [DataFromPlugins(name='IMX219', data=[data],
+                                      dim='DataND', labels=['Camera image'],
+                                      nav_indexes=(0,),
+                                      axis=[Axis(data=np.linspace(0, nframes, nframes, endpoint=False), label='NFrames', index=2), self.x_axis, self.y_axis, ])]
+
+            elif self.settings["multiframe_display"] == 'Multi 2D':
+                dat = [DataFromPlugins(name='IMX219', data=data[index],
+                              dim='Data2D', labels=['Camera image'],
+                              x_axis=self.x_axis,
+                              y_axis=self.y_axis) for index in range(nframes)]
+
+        self.dte_signal.emit(DataToExport('IMX219', data=dat))
 
     def stop(self):
         self.stop_acquire_signal.emit()
